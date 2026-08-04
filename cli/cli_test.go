@@ -213,3 +213,145 @@ func TestParseFormat(t *testing.T) {
 		t.Error("ParseFormat accepted toml")
 	}
 }
+
+// Flags after positional arguments are what people actually type, and what the
+// tools' own help examples show, so both orders must work.
+func TestFlagsMayFollowPositionalArguments(t *testing.T) {
+	var out, errOut bytes.Buffer
+	var config string
+	var markdown bool
+	var got []string
+
+	newApp := func() *App {
+		out.Reset()
+		errOut.Reset()
+		config, markdown, got = "", false, nil
+		return &App{
+			Name: "dataprep-test", Short: "s", Stdout: &out, Stderr: &errOut,
+			Commands: []*Command{{
+				Name:  "compare",
+				Short: "compare two things",
+				SetFlags: func(fs *flag.FlagSet) {
+					fs.StringVar(&config, "config", "", "a value flag")
+					fs.BoolVar(&markdown, "markdown", false, "a bool flag")
+				},
+				Run: func(ctx *Context, args []string) error {
+					got = args
+					return nil
+				},
+			}},
+		}
+	}
+
+	cases := map[string][]string{
+		"flags last":        {"compare", "a.json", "b.json", "-markdown", "-config", "r.json"},
+		"flags first":       {"compare", "-markdown", "-config", "r.json", "a.json", "b.json"},
+		"flags interleaved": {"compare", "a.json", "-config", "r.json", "b.json", "-markdown"},
+		"equals form":       {"compare", "a.json", "b.json", "-config=r.json", "-markdown"},
+	}
+	for name, args := range cases {
+		t.Run(name, func(t *testing.T) {
+			if code := newApp().Execute(args); code != ExitOK {
+				t.Fatalf("exit code = %d, stderr: %s", code, errOut.String())
+			}
+			if len(got) != 2 || got[0] != "a.json" || got[1] != "b.json" {
+				t.Errorf("positional args = %v, want [a.json b.json]", got)
+			}
+			if config != "r.json" || !markdown {
+				t.Errorf("config = %q, markdown = %v", config, markdown)
+			}
+		})
+	}
+}
+
+// A bare "-" is a file name meaning stdin, not a flag.
+func TestDashIsAPositionalArgument(t *testing.T) {
+	var out, errOut bytes.Buffer
+	var got []string
+	var markdown bool
+	app := &App{
+		Name: "dataprep-test", Short: "s", Stdout: &out, Stderr: &errOut,
+		Commands: []*Command{{
+			Name:     "compare",
+			SetFlags: func(fs *flag.FlagSet) { fs.BoolVar(&markdown, "markdown", false, "") },
+			Run: func(ctx *Context, args []string) error {
+				got = args
+				return nil
+			},
+		}},
+	}
+	if code := app.Execute([]string{"compare", "a.json", "-", "-markdown"}); code != ExitOK {
+		t.Fatalf("exit code = %d, stderr: %s", code, errOut.String())
+	}
+	if len(got) != 2 || got[1] != "-" {
+		t.Fatalf("args = %v, want the bare dash kept as an operand", got)
+	}
+	if !markdown {
+		t.Error("the flag after the dash was not parsed")
+	}
+}
+
+// Everything after "--" is an operand, even if it looks like a flag.
+func TestDoubleDashEndsFlagParsing(t *testing.T) {
+	var out, errOut bytes.Buffer
+	var got []string
+	var markdown bool
+	app := &App{
+		Name: "dataprep-test", Short: "s", Stdout: &out, Stderr: &errOut,
+		Commands: []*Command{{
+			Name:     "run",
+			SetFlags: func(fs *flag.FlagSet) { fs.BoolVar(&markdown, "markdown", false, "") },
+			Run: func(ctx *Context, args []string) error {
+				got = args
+				return nil
+			},
+		}},
+	}
+	if code := app.Execute([]string{"run", "--", "mvn", "verify", "-markdown"}); code != ExitOK {
+		t.Fatalf("exit code = %d, stderr: %s", code, errOut.String())
+	}
+	if len(got) != 3 || got[0] != "mvn" || got[2] != "-markdown" {
+		t.Fatalf("args = %v, want everything after -- untouched", got)
+	}
+	if markdown {
+		t.Error("a flag after -- was still parsed")
+	}
+}
+
+// A leaf tool has no sub command, so its flags permute against the top-level
+// flag set instead.
+func TestLeafToolAlsoAcceptsTrailingFlags(t *testing.T) {
+	var out, errOut bytes.Buffer
+	var endpoint string
+	var got []string
+	app := &App{
+		Name: "dataprep-test", Short: "s", Stdout: &out, Stderr: &errOut,
+		Main: &Command{
+			Name:     "main",
+			SetFlags: func(fs *flag.FlagSet) { fs.StringVar(&endpoint, "endpoint", "", "") },
+			Run: func(ctx *Context, args []string) error {
+				got = args
+				return nil
+			},
+		},
+	}
+	if code := app.Execute([]string{"thing", "-endpoint", "x", "-verbose"}); code != ExitOK {
+		t.Fatalf("exit code = %d, stderr: %s", code, errOut.String())
+	}
+	if endpoint != "x" {
+		t.Errorf("endpoint = %q", endpoint)
+	}
+	if len(got) != 1 || got[0] != "thing" {
+		t.Errorf("args = %v, want [thing]", got)
+	}
+}
+
+func TestUnknownFlagStillFailsCleanly(t *testing.T) {
+	app, _, errOut := newTestApp(true)
+	if code := app.Execute([]string{"alpha", "-nope"}); code != ExitUsage {
+		t.Fatalf("exit code = %d, want %d", code, ExitUsage)
+	}
+	if !strings.Contains(errOut.String(), "not defined") {
+		t.Errorf("stderr = %q", errOut.String())
+	}
+}

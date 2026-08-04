@@ -74,6 +74,53 @@ func (g *Globals) Register(fs *flag.FlagSet) {
 	fs.BoolVar(&g.help, "h", false, "show this help and exit")
 }
 
+// permute reorders args so that flags may appear after positional arguments.
+//
+// The flag package stops at the first non-flag word, which would make
+// `compare base.json head.json -markdown` silently pass "-markdown" through as
+// a third file name. People write flags last, so the tools accept it.
+//
+// Everything after a literal "--" is left alone.
+func permute(fs *flag.FlagSet, args []string) []string {
+	var flags, operands []string
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			operands = append(operands, args[i+1:]...)
+			break
+		}
+		// A bare "-" means stdin, not a flag.
+		if len(arg) < 2 || arg[0] != '-' {
+			operands = append(operands, arg)
+			continue
+		}
+
+		flags = append(flags, arg)
+		name := strings.TrimLeft(arg, "-")
+		if strings.Contains(name, "=") {
+			continue // -name=value carries its own value
+		}
+		f := fs.Lookup(name)
+		if f == nil {
+			continue // unknown flag: let Parse report it, in its own words
+		}
+		if bf, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && bf.IsBoolFlag() {
+			continue // -verbose takes no value
+		}
+		if i+1 < len(args) {
+			i++
+			flags = append(flags, args[i])
+		}
+	}
+
+	// If an operand looks like a flag, keep Parse from reading it as one.
+	if len(operands) > 0 && len(operands[0]) > 1 && operands[0][0] == '-' {
+		flags = append(flags, "--")
+	}
+	return append(flags, operands...)
+}
+
 // merge copies the global flags that were explicitly given after the sub
 // command over the ones parsed before it.
 func (g *Globals) merge(after *Globals, fs *flag.FlagSet) {
@@ -143,7 +190,14 @@ func (a *App) Execute(args []string) int {
 		a.Main.SetFlags(fs)
 	}
 
-	if err := fs.Parse(args); err != nil {
+	// Only a leaf tool permutes here. On a grouped tool the sub command's flags
+	// are not registered yet, and the command name itself is a positional — so
+	// the permutation belongs to the sub command's own parse, below.
+	parseArgs := args
+	if len(a.Commands) == 0 {
+		parseArgs = permute(fs, args)
+	}
+	if err := fs.Parse(parseArgs); err != nil {
 		return a.usageError(err)
 	}
 	if globals.help {
@@ -196,7 +250,7 @@ func (a *App) Execute(args []string) int {
 		cmd.SetFlags(sub)
 	}
 	cmd.flags = sub
-	if err := sub.Parse(rest[1:]); err != nil {
+	if err := sub.Parse(permute(sub, rest[1:])); err != nil {
 		return a.usageError(err)
 	}
 	globals.merge(subGlobals, sub)
