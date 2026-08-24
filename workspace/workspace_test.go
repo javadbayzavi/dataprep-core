@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -153,7 +154,8 @@ func TestSetSourceDetectsKind(t *testing.T) {
 		{"https://api.example.com", KindHTTPS},
 		{"http://api.example.com", KindHTTP},
 		{"db.internal:5432", KindTCP},
-		{"postgres://db.internal:5432/orders", KindTCP},
+		{"mysql://db.internal:3306/orders", KindTCP},
+		{"postgres://db.internal:5432/orders", KindPostgres},
 	}
 	for _, tc := range cases {
 		res, err := SetSource(ref, Source{Name: "s", Endpoint: tc.endpoint})
@@ -212,5 +214,48 @@ func assertPerm(t *testing.T, path string, want os.FileMode) {
 	}
 	if got := info.Mode().Perm(); got != want {
 		t.Errorf("%s has mode %#o, want %#o", path, got, want)
+	}
+}
+
+// A database is a source a tool can speak to, not merely reach, so it gets its
+// own kind even though reachability still goes over TCP.
+func TestPostgresIsItsOwnKind(t *testing.T) {
+	for _, endpoint := range []string{
+		"postgres://app@db.internal:5432/orders",
+		"postgresql://db.internal/orders",
+	} {
+		if got := DetectKind(endpoint); got != KindPostgres {
+			t.Errorf("DetectKind(%q) = %q, want %q", endpoint, got, KindPostgres)
+		}
+	}
+	// Everything else without a known scheme stays a plain TCP endpoint.
+	for _, endpoint := range []string{"mysql://db/orders", "kafka://broker:9092", "db.internal:5432"} {
+		if got := DetectKind(endpoint); got != KindTCP {
+			t.Errorf("DetectKind(%q) = %q, want %q", endpoint, got, KindTCP)
+		}
+	}
+	if err := ValidateKind(KindPostgres); err != nil {
+		t.Errorf("ValidateKind(postgres): %v", err)
+	}
+}
+
+func TestSetSourceStoresAPostgresSource(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "dataprep")
+	if _, err := Init(InitOptions{Ref: Ref{ConfigDir: dir}, CLIVersion: "test"}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	res, err := SetSource(Ref{ConfigDir: dir}, Source{
+		Name:     "app_db",
+		Endpoint: "postgres://app:hunter2@db.internal:5432/orders",
+		Provider: "app-db",
+	})
+	if err != nil {
+		t.Fatalf("SetSource: %v", err)
+	}
+	if res.Source.Kind != KindPostgres {
+		t.Errorf("kind = %q, want %q", res.Source.Kind, KindPostgres)
+	}
+	if strings.Contains(res.Source.Endpoint, "hunter2") {
+		t.Errorf("the stored password was echoed back: %q", res.Source.Endpoint)
 	}
 }

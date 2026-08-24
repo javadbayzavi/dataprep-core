@@ -107,7 +107,7 @@ func Run(opts Options) (*Result, error) {
 		}
 		res.Reachable = true
 		res.Detail = detail
-	case workspace.KindTCP:
+	case workspace.KindTCP, workspace.KindPostgres:
 		detail, err := checkTCP(endpoint, opts.Timeout)
 		res.LatencyMS = time.Since(start).Milliseconds()
 		if err != nil {

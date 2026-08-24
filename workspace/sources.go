@@ -173,6 +173,10 @@ const (
 	KindHTTP  = "http"
 	KindHTTPS = "https"
 	KindTCP   = "tcp"
+	// KindPostgres is a database a tool can actually speak to, not merely
+	// reach. Reachability checks still treat it as a TCP endpoint; the tools
+	// that query it (dataprep-profile) key off this kind.
+	KindPostgres = "postgres"
 )
 
 // DetectKind guesses the kind from the endpoint shape.
@@ -186,9 +190,11 @@ func DetectKind(endpoint string) string {
 		return KindHTTP
 	case "https":
 		return KindHTTPS
+	case "postgres", "postgresql":
+		return KindPostgres
 	default:
-		// postgres://, mysql://, redis:// ... are reachability-checked over TCP
-		// until a dedicated connector tool exists.
+		// mysql://, redis://, kafka:// ... are reachability-checked over TCP
+		// until a tool exists that speaks their protocol.
 		return KindTCP
 	}
 }
@@ -196,10 +202,11 @@ func DetectKind(endpoint string) string {
 // ValidateKind rejects kinds no tool can act on.
 func ValidateKind(kind string) error {
 	switch kind {
-	case KindHTTP, KindHTTPS, KindTCP:
+	case KindHTTP, KindHTTPS, KindTCP, KindPostgres:
 		return nil
 	default:
-		return fmt.Errorf("unsupported source kind %q (want %s, %s or %s)", kind, KindHTTP, KindHTTPS, KindTCP)
+		return fmt.Errorf("unsupported source kind %q (want %s, %s, %s or %s)",
+			kind, KindHTTP, KindHTTPS, KindTCP, KindPostgres)
 	}
 }
 
